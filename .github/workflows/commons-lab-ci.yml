@@ -1,0 +1,39 @@
+name: ci
+on:
+  pull_request:
+  merge_group:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Affected packages
+        id: affected
+        shell: bash
+        run: |
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" HEAD)
+          if echo "$changed" | grep -qE '^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json|tsconfig[^/]*\.json)$'; then
+            filters="--filter=./packages/*"
+          else
+            filters=""
+            for dir in $(echo "$changed" | grep -oE '^packages/[^/]+' | sort -u); do
+              if [ -f "$dir/package.json" ]; then filters="$filters --filter=...$(node -p "require('./$dir/package.json').name")"; fi
+            done
+          fi
+          echo "filters=$filters" >> "$GITHUB_OUTPUT"
+          echo "affected: ${filters:-none}"
+      - name: Build, type-check and test them and their dependents
+        if: steps.affected.outputs.filters != ''
+        run: pnpm turbo run build check:type test:ci --continue=never ${{ steps.affected.outputs.filters }} --filter='!./fixtures/*' --filter='!./packages/vite-plugin-cloudflare/playground*'
